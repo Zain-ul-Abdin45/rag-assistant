@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Assistant</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0d0d;
+      --surface:   #161616;
+      --surface2:  #1f1f1f;
+      --border:    #2a2a2a;
+      --accent:    #4f8ef7;
+      --accent-dim:#1e3660;
+      --text:      #e0e0e0;
+      --text-dim:  #888;
+      --user-bg:   #1a3050;
+      --bot-bg:    #1a1a1a;
+      --danger:    #e05555;
+      --success:   #4caf6e;
+      --radius:    10px;
+    }
+
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* ── header ─────────────────────────────── */
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 20px; border-bottom: 1px solid var(--border);
+      background: var(--surface); flex-shrink: 0;
+    }
+    header svg { color: var(--accent); }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    #health-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-dim); margin-left: auto;
+      transition: background 0.3s;
+    }
+    #health-dot.ok  { background: var(--success); }
+    #health-dot.err { background: var(--danger); }
+    #health-label { font-size: 0.75rem; color: var(--text-dim); }
+
+    /* ── layout ─────────────────────────────── */
+    .layout { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── sidebar ────────────────────────────── */
+    aside {
+      width: 260px; min-width: 200px; max-width: 340px;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sidebar-header {
+      padding: 14px 16px 10px;
+      font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* upload */
+    #drop-zone {
+      margin: 12px; border: 2px dashed var(--border); border-radius: var(--radius);
+      padding: 18px 12px; text-align: center; cursor: pointer;
+      transition: border-color 0.2s, background 0.2s; font-size: 0.85rem; color: var(--text-dim);
+    }
+    #drop-zone:hover, #drop-zone.drag-over { border-color: var(--accent); background: var(--accent-dim); color: var(--text); }
+    #drop-zone svg { display: block; margin: 0 auto 8px; opacity: 0.5; }
+    #file-input { display: none; }
+
+    #upload-progress {
+      margin: 0 12px 8px; display: none;
+    }
+    progress { width: 100%; height: 4px; border-radius: 2px; appearance: none; }
+    progress::-webkit-progress-bar { background: var(--border); border-radius: 2px; }
+    progress::-webkit-progress-value { background: var(--accent); border-radius: 2px; }
+    /* indeterminate shimmer when no value attribute */
+    progress:not([value]) { background: linear-gradient(90deg, var(--border) 25%, var(--accent) 50%, var(--border) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 2px; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    #upload-status { font-size: 0.75rem; color: var(--text-dim); margin-top: 4px; }
+
+    /* doc list */
+    #doc-list { flex: 1; overflow-y: auto; padding: 6px 8px; }
+    .doc-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; border-radius: 7px; cursor: default;
+      transition: background 0.15s; font-size: 0.85rem;
+    }
+    .doc-item:hover { background: var(--surface2); }
+    .doc-icon { flex-shrink: 0; color: var(--accent); opacity: 0.8; }
+    .doc-info { flex: 1; overflow: hidden; }
+    .doc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .doc-meta { font-size: 0.7rem; color: var(--text-dim); margin-top: 2px; }
+    .doc-delete {
+      flex-shrink: 0; background: none; border: none; cursor: pointer;
+      color: var(--text-dim); padding: 3px; border-radius: 4px;
+      opacity: 0; transition: opacity 0.15s, color 0.15s;
+    }
+    .doc-item:hover .doc-delete { opacity: 1; }
+    .doc-delete:hover { color: var(--danger); }
+    .empty-docs { text-align: center; color: var(--text-dim); font-size: 0.8rem; padding: 24px 12px; }
+
+    /* ── chat ───────────────────────────────── */
+    main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    #messages {
+      flex: 1; overflow-y: auto; padding: 20px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+
+    .msg { display: flex; gap: 10px; max-width: 820px; width: 100%; }
+    .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+    .msg.bot  { align-self: flex-start; }
+
+    .avatar {
+      width: 30px; height: 30px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem; font-weight: 700; flex-shrink: 0;
+    }
+    .msg.user .avatar { background: var(--accent); }
+    .msg.bot  .avatar { background: var(--surface2); border: 1px solid var(--border); }
+
+    .bubble {
+      border-radius: var(--radius); padding: 12px 16px;
+      line-height: 1.6; font-size: 0.9rem;
+      max-width: calc(100% - 46px);
+    }
+    .msg.user .bubble { background: var(--user-bg); border-bottom-right-radius: 3px; }
+    .msg.bot  .bubble { background: var(--bot-bg); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+
+    /* markdown styles inside bubble */
+    .bubble p  { margin-bottom: 8px; }
+    .bubble p:last-child { margin-bottom: 0; }
+    .bubble pre { background: #0a0a0a; border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; overflow-x: auto; margin: 8px 0; }
+    .bubble code { font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 0.82rem; }
+    .bubble p code { background: #111; padding: 1px 5px; border-radius: 4px; }
+    .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
+    .bubble h1,.bubble h2,.bubble h3 { margin: 10px 0 6px; font-size: 1rem; }
+
+    /* sources */
+    .sources { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+    .sources-toggle {
+      background: none; border: none; cursor: pointer;
+      font-size: 0.75rem; color: var(--accent); padding: 0; display: flex; align-items: center; gap: 4px;
+    }
+    .sources-toggle:hover { text-decoration: underline; }
+    .sources-list { display: none; margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .sources-list.hidden { display: none; }
+    .source-chip {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 6px 10px; font-size: 0.75rem;
+    }
+    .source-file { font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+    .source-excerpt { color: var(--text-dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+    /* typing indicator */
+    .typing { display: flex; align-items: center; gap: 4px; padding: 6px 0; }
+    .typing span {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim);
+      animation: bounce 1.2s infinite;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+      40% { transform: translateY(-6px); opacity: 1; }
+    }
+
+    /* welcome */
+    #welcome {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: var(--text-dim); text-align: center; gap: 10px;
+    }
+    #welcome svg { opacity: 0.3; }
+    #welcome p { font-size: 0.9rem; }
+
+    /* input bar */
+    #input-bar {
+      padding: 14px 20px; border-top: 1px solid var(--border);
+      background: var(--surface); display: flex; gap: 10px; align-items: flex-end;
+    }
+    #chat-input {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 14px; color: var(--text);
+      font-size: 0.9rem; resize: none; max-height: 160px; outline: none;
+      line-height: 1.5; transition: border-color 0.2s;
+    }
+    #chat-input:focus { border-color: var(--accent); }
+    #chat-input::placeholder { color: var(--text-dim); }
+    #send-btn {
+      background: var(--accent); border: none; border-radius: 8px;
+      color: #fff; cursor: pointer; padding: 10px 14px;
+      font-size: 0.85rem; font-weight: 600; transition: opacity 0.2s;
+      display: flex; align-items: center; gap: 6px;
+    }
+    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #send-btn:hover:not(:disabled) { opacity: 0.85; }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* toast */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(60px);
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 20px; font-size: 0.85rem; transition: transform 0.3s; z-index: 999;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+    #toast.err  { border-color: var(--danger); color: var(--danger); }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+    <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/>
+    <path d="M12 6v6l4 2"/>
+  </svg>
+  <h1>RAG Assistant</h1>
+  <div id="health-label">checking…</div>
+  <div id="health-dot"></div>
+</header>
+
+<div class="layout">
+  <!-- sidebar -->
+  <aside>
+    <div class="sidebar-header">Documents</div>
+
+    <div id="drop-zone">
+      <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/>
+        <polyline points="9 15 12 18 15 15"/>
+      </svg>
+      Drop PDF here<br/>or click to browse
+    </div>
+    <input type="file" id="file-input" accept=".pdf" multiple />
+
+    <div id="upload-progress">
+      <progress id="progress-bar" value="0" max="100"></progress>
+      <div id="upload-status"></div>
+    </div>
+
+    <div id="doc-list">
+      <div class="empty-docs">No documents yet.<br/>Upload a PDF to get started.</div>
+    </div>
+  </aside>
+
+  <!-- chat -->
+  <main>
+    <div id="messages">
+      <div id="welcome">
+        <svg width="52" height="52" fill="none" stroke="currentColor" stroke-width="1.2" viewBox="0 0 24 24">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        <p>Upload PDFs in the sidebar, then ask anything.</p>
+      </div>
+    </div>
+
+    <div id="input-bar">
+      <textarea id="chat-input" rows="1" placeholder="Ask a question about your documents…"></textarea>
+      <button id="send-btn" disabled>
+        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+        Send
+      </button>
+    </div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  // ── state ──────────────────────────────────────────────────────────────────
+  let history = [];
+  let streaming = false;
+  const API_BASE = window.location.protocol === 'file:' ? 'http://127.0.0.1:8000' : window.location.origin;
+
+  // Stable session ID — persists across page refreshes so memory accumulates.
+  let sessionId = localStorage.getItem('rag_session_id');
+  if (!sessionId) {
+    sessionId = crypto.randomUUID();
+    localStorage.setItem('rag_session_id', sessionId);
+  }
+
+  function apiUrl(path) {
+    return `${API_BASE}${path}`;
+  }
+
+  // ── utils ──────────────────────────────────────────────────────────────────
+  function toast(msg, isErr = false) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'show' + (isErr ? ' err' : '');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.className = ''; }, 3000);
+  }
+
+  function autoResize(ta) {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+  }
+
+  function scrollToBottom() {
+    const el = document.getElementById('messages');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // ── health check ───────────────────────────────────────────────────────────
+  async function checkHealth() {
+    try {
+      const r = await fetch(apiUrl('/health'));
+      const d = await r.json();
+      const dot = document.getElementById('health-dot');
+      const lbl = document.getElementById('health-label');
+      if (d.ollama) {
+        dot.className = 'ok';
+        lbl.textContent = d.chat_model;
+      } else {
+        dot.className = 'err';
+        lbl.textContent = 'Ollama offline';
+      }
+    } catch {}
+  }
+
+  // ── document list ──────────────────────────────────────────────────────────
+  async function loadDocs() {
+    const r = await fetch(apiUrl('/documents'));
+    const docs = await r.json();
+    renderDocs(docs);
+  }
+
+  function renderDocs(docs) {
+    const list = document.getElementById('doc-list');
+    if (!docs.length) {
+      list.innerHTML = '<div class="empty-docs">No documents yet.<br/>Upload a PDF to get started.</div>';
+      document.getElementById('send-btn').disabled = true;
+      return;
+    }
+    document.getElementById('send-btn').disabled = streaming;
+    list.innerHTML = docs.map(d => `
+      <div class="doc-item" data-id="${d.id}">
+        <svg class="doc-icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <div class="doc-info">
+          <div class="doc-name" title="${escHtml(d.filename)}">${escHtml(d.filename)}</div>
+          <div class="doc-meta">${d.pages} page${d.pages !== 1 ? 's' : ''} · ${formatDate(d.created_at)}</div>
+        </div>
+        <button class="doc-delete" title="Remove" onclick="deleteDoc(${d.id}, event)">
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+            <path d="M10 11v6m4-6v6"/><path d="M9 6V4h6v2"/>
+          </svg>
+        </button>
+      </div>
+    `).join('');
+  }
+
+  async function deleteDoc(id, e) {
+    e.stopPropagation();
+    if (!confirm('Remove this document and its chunks?')) return;
+    await fetch(apiUrl(`/documents/${id}`), { method: 'DELETE' });
+    await loadDocs();
+    toast('Document removed.');
+  }
+
+  // ── upload ─────────────────────────────────────────────────────────────────
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    uploadFiles([...e.dataTransfer.files]);
+  });
+  fileInput.addEventListener('change', () => { uploadFiles([...fileInput.files]); fileInput.value = ''; });
+
+  async function pollJob(jobId, onProgress) {
+    const deadline = Date.now() + 10 * 60 * 1000; // 10-minute hard limit
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 1500));
+      let job;
+      try {
+        const r = await fetch(apiUrl(`/jobs/${jobId}`));
+        if (!r.ok) return { status: 'error', error: 'Job lookup failed' };
+        job = await r.json();
+      } catch (e) {
+        return { status: 'error', error: e.message };
+      }
+      if (onProgress) {
+        onProgress(job.chunks_done ?? null, job.chunks_total ?? null, job.phase ?? null);
+      }
+      if (job.status !== 'processing') return job;
+    }
+    return { status: 'error', error: 'Timed out after 10 minutes. Run: ollama pull nomic-embed-text' };
+  }
+
+  async function uploadFiles(files) {
+    const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    if (!pdfs.length) { toast('Only PDF files are supported.', true); return; }
+
+    const prog = document.getElementById('upload-progress');
+    const bar  = document.getElementById('progress-bar');
+    const stat = document.getElementById('upload-status');
+
+    prog.style.display = 'block';
+    for (let i = 0; i < pdfs.length; i++) {
+      const f = pdfs[i];
+      bar.value = 0;
+      stat.textContent = `Uploading ${f.name}…`;
+
+      const fd = new FormData();
+      fd.append('file', f);
+
+      try {
+        const r = await fetch(apiUrl('/documents'), { method: 'POST', body: fd });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ detail: 'Upload failed' }));
+          toast(err.detail || 'Upload failed', true);
+          continue;
+        }
+        const { job_id } = await r.json();
+
+        stat.textContent = `Indexing ${f.name} — waiting for first embedding…`;
+        bar.removeAttribute('value'); // indeterminate
+
+        const job = await pollJob(job_id, (done, total, phase) => {
+          if (phase === 'extracting') {
+            bar.removeAttribute('value');
+            stat.textContent = `Extracting text from ${f.name}…`;
+          } else if (phase === 'embedding') {
+            if (done === 1 && total != null) {
+              // model just finished loading — switch to real progress bar
+              bar.value = 0;
+              bar.setAttribute('value', 0);
+            }
+            if (total != null && total > 0) {
+              const pct = Math.round((done / total) * 100);
+              bar.value = pct;
+              bar.setAttribute('value', pct);
+              stat.textContent = `Embedding chunk ${done} of ${total}…`;
+            }
+          } else if (phase === 'summarising') {
+            bar.value = 100;
+            bar.setAttribute('value', 100);
+            stat.textContent = `Generating summary…`;
+          } else {
+            // still waiting for first embed (model cold-start)
+            bar.removeAttribute('value');
+            stat.textContent = `Loading embedding model — first run can take 30–90 s…`;
+          }
+        });
+
+        bar.value = 100;
+        bar.setAttribute('value', 100);
+
+        if (job.status === 'done') {
+          const warn = (job.chunks <= 3) ? ' ⚠ very few chunks — PDF may be image-only' : '';
+          stat.textContent = `Done — ${job.chunks} chunks indexed${warn}`;
+          toast(`${f.name} ingested (${job.chunks} chunks)${warn}`);
+        } else {
+          stat.textContent = `Failed: ${job.error}`;
+          toast(`Ingestion failed: ${job.error}`, true);
+        }
+      } catch (err) {
+        toast('Upload error: ' + err.message, true);
+      }
+
+      await loadDocs();
+    }
+    setTimeout(() => { prog.style.display = 'none'; }, 2000);
+  }
+
+  // ── chat ───────────────────────────────────────────────────────────────────
+  const input   = document.getElementById('chat-input');
+  const sendBtn = document.getElementById('send-btn');
+
+  input.addEventListener('input', () => autoResize(input));
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  sendBtn.addEventListener('click', sendMessage);
+
+  function removeWelcome() {
+    const w = document.getElementById('welcome');
+    if (w) w.remove();
+  }
+
+  function appendMessage(role, content = '') {
+    removeWelcome();
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+
+    const avatarText = role === 'user' ? 'You' : 'AI';
+    div.innerHTML = `
+      <div class="avatar">${avatarText}</div>
+      <div class="bubble">
+        <div class="content">${role === 'user' ? escHtml(content) : ''}</div>
+      </div>
+    `;
+    msgs.appendChild(div);
+    scrollToBottom();
+    return div.querySelector('.bubble');
+  }
+
+  function appendTyping() {
+    removeWelcome();
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.id = 'typing-indicator';
+    div.className = 'msg bot';
+    div.innerHTML = `
+      <div class="avatar">AI</div>
+      <div class="bubble">
+        <div class="typing"><span></span><span></span><span></span></div>
+      </div>
+    `;
+    msgs.appendChild(div);
+    scrollToBottom();
+    return div;
+  }
+
+  function renderSources(bubble, sources) {
+    if (!sources || !sources.length) return;
+    const sec = document.createElement('div');
+    sec.className = 'sources';
+    sec.innerHTML = `
+      <button class="sources-toggle" onclick="toggleSources(this)">
+        <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <polyline points="6 15 12 9 18 15"/>
+        </svg>
+        ${sources.length} source${sources.length !== 1 ? 's' : ''} used
+      </button>
+      <div class="sources-list">
+        ${sources.map(s => `
+          <div class="source-chip">
+            <div class="source-file">${escHtml(s.filename)}</div>
+            <div class="source-excerpt">${escHtml(s.chunk_text)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    bubble.appendChild(sec);
+  }
+
+  function toggleSources(btn) {
+    const list = btn.nextElementSibling;
+    list.classList.toggle('hidden');
+    const icon = btn.querySelector('svg polyline');
+    // collapsed → down arrow; expanded → up arrow
+    icon.setAttribute('points', list.classList.contains('hidden')
+      ? '6 9 12 15 18 9'
+      : '6 15 12 9 18 15');
+  }
+
+  async function sendMessage() {
+    const text = input.value.trim();
+    if (!text || streaming) return;
+
+    streaming = true;
+    sendBtn.disabled = true;
+    input.value = '';
+    autoResize(input);
+
+    appendMessage('user', text);
+    const typing = appendTyping();
+
+    let sources = [];
+    let botBubble = null;
+    let botContent = '';
+
+    try {
+      const r = await fetch(apiUrl('/chat'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, history, session_id: sessionId }),
+      });
+
+      if (!r.ok) throw new Error('Server error ' + r.status);
+
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let ev;
+          try { ev = JSON.parse(line); } catch { continue; }
+
+          if (ev.type === 'sources') {
+            sources = ev.data;
+            // Dots keep showing — bubble is created on the first real token.
+
+          } else if (ev.type === 'token') {
+            if (!botBubble) {
+              // First token: replace the typing indicator with the bot bubble.
+              typing.remove();
+              botBubble = appendMessage('bot');
+              botBubble.querySelector('.content').innerHTML = '';
+            }
+            botContent += ev.data;
+            botBubble.querySelector('.content').innerHTML = marked.parse(botContent);
+            scrollToBottom();
+
+          } else if (ev.type === 'done') {
+            if (botBubble) renderSources(botBubble, sources);
+            history.push({ role: 'user', content: text });
+            history.push({ role: 'assistant', content: botContent });
+            // keep history bounded
+            if (history.length > 20) history = history.slice(-20);
+          }
+        }
+      }
+    } catch (err) {
+      typing.remove();
+      if (!botBubble) botBubble = appendMessage('bot');
+      botBubble.querySelector('.content').textContent = 'Error: ' + err.message;
+      toast('Request failed: ' + err.message, true);
+    } finally {
+      streaming = false;
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  // ── helpers ────────────────────────────────────────────────────────────────
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function formatDate(ts) {
+    return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  // ── init ───────────────────────────────────────────────────────────────────
+  checkHealth();
+  loadDocs();
+  setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>

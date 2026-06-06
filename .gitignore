@@ -1,0 +1,32 @@
+# secrets
+env.local
+
+# uploads and generated output
+uploads/*
+!uploads/.gitkeep
+summaries/*
+!summaries/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.rag_assistant/
+
+# ide
+.vscode/
+.idea/
+POSTGRES_MIGRATION.md
+env.local
+env.local.example
+summaries/
+.venv/
+.claude/
+uploads/
+deployement.md
+instructions.md
+pgvector/

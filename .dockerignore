@@ -1,0 +1,16 @@
+.rag_assistant/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env.local
+.git/
+.gitignore
+logs/
+uploads/
+summaries/
+pgvector/
+*.mmd
+deployment.md
+instructions.md
+POSTGRES_MIGRATION.md

@@ -1,0 +1,273 @@
+%%{init: {"theme": "dark", "flowchart": {"curve": "basis", "nodeSpacing": 35, "rankSpacing": 55}}}%%
+flowchart TD
+
+    %% ─── Style classes ──────────────────────────────────────────────────────
+    classDef current  fill:#1a3d1a,color:#a8e6a8,stroke:#4CAF50,stroke-width:2px
+    classDef phase1   fill:#0d2b45,color:#a8d4f5,stroke:#2196F3,stroke-width:2px
+    classDef phase2   fill:#3b1414,color:#f5a8a8,stroke:#f44336,stroke-width:2px
+    classDef storage  fill:#2d2b00,color:#f5e642,stroke:#cdcd00,stroke-width:2px
+    classDef ollama   fill:#1a0d3b,color:#d4a8f5,stroke:#9C27B0,stroke-width:2px
+    classDef config   fill:#2b1a0a,color:#f5c842,stroke:#FF9800,stroke-width:2px
+    classDef auth     fill:#3b2000,color:#ffcc80,stroke:#FF8C00,stroke-width:2px
+    classDef cache    fill:#003b3b,color:#80deea,stroke:#00BCD4,stroke-width:2px
+    classDef obs      fill:#3b001a,color:#f8bbd9,stroke:#E91E63,stroke-width:2px
+    classDef infra    fill:#1a1a2e,color:#b0b0c0,stroke:#607D8B,stroke-width:2px
+
+    %% ─── Legend ─────────────────────────────────────────────────────────────
+    subgraph LEGEND["Legend"]
+        direction LR
+        L0["Phase 0 — current"]:::current
+        L1["Phase 1 — LlamaIndex"]:::phase1
+        L2["Phase 2 — LangGraph"]:::phase2
+        L3["Auth & Security"]:::auth
+        L4["Cache & Queue"]:::cache
+        L5["Observability"]:::obs
+        L6["Deployment & Infra"]:::infra
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 1 — NETWORK EDGE
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    UI["Browser UI\nstatic/index.html\nUpload · Chat · Document List · Delete"]:::current
+
+    NGINX["Nginx Reverse Proxy\nSSL termination · gzip compression\nstatic file serving\ndocker service: nginx"]:::infra
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 2 — AUTH & SECURITY
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    subgraph AUTH["Auth & Security Tier"]
+        direction LR
+        API_KEY["API Key Middleware\nX-API-Key header\nFastAPI Depends()"]:::auth
+        RATE_LIM["Rate Limiter\nslowapi + Redis counters\nper-IP · per-key limits"]:::auth
+        INPUT_VAL["Input Validation\nPydantic models\nfile type + size guard"]:::auth
+        CORS_MW["CORS Policy\nallowlist origins\ncredentials + headers"]:::auth
+        API_KEY --> RATE_LIM --> INPUT_VAL --> CORS_MW
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 3 — APPLICATION (FastAPI)
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    subgraph FASTAPI["FastAPI Backend — main.py  (docker service: app)"]
+        direction LR
+        EP_UP["POST /documents\naccept file upload"]:::current
+        EP_LIST["GET /documents\nlist all docs"]:::current
+        EP_DEL["DELETE /documents/id\nremove doc + chunks"]:::current
+        EP_CHAT["POST /chat\nstream answer"]:::current
+        EP_HEALTH["GET /health\nollama ping"]:::current
+        EP_METRICS["GET /metrics\nPrometheus scrape"]:::obs
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 4 — CACHE & QUEUE
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    subgraph CACHEQ["Cache & Queue Tier  (Phase 1 addition)"]
+        direction LR
+        JOB_QUEUE["Job Queue\nRQ / Celery\nreplaces in-memory _jobs dict"]:::cache
+        WORKER["Background Worker\nRQ Worker process\nconsumes ingestion tasks"]:::cache
+        EMBED_CACHE["Embedding Cache\nkey = sha256(text + model)\nvalue = vector · TTL 7 d"]:::cache
+        JOB_STATE["Job State Store\njob_id → status · phase · progress\nread by GET /jobs/{id}"]:::cache
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 5 — PROCESSING PIPELINES
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    subgraph INGEST0["Ingestion · Phase 0  (current — ingest.py)"]
+        direction TB
+        PDF_EXT["extract_text()\nPyMuPDF — PDF only"]:::current
+        CHUNKER["chunk_text()\nfixed-size + overlap\nCHUNK_SIZE=800  OVERLAP=150"]:::current
+        EMBEDDER["get_embedding()\nOllama direct HTTP\nEMBED_WORKERS=3 threads"]:::current
+        SUMMARIZER["summarize.py\nOllama Markdown summary\n→ summaries/"]:::current
+        PDF_EXT --> CHUNKER --> EMBEDDER
+    end
+
+    subgraph INGEST1["Ingestion · Phase 1  (LlamaIndex — replaces ingest.py internals)"]
+        direction TB
+        FD["File Type Detection\n.pdf · .docx · .txt · .md · .html"]:::phase1
+        LI_LOAD["LlamaIndex Document Loaders\nSimpleDirectoryReader · DocxReader\nMarkdownReader · HTMLTagReader"]:::phase1
+        LI_PARSE["SimpleNodeParser\nsection-aware chunking\npreserves title + page metadata"]:::phase1
+        LI_EMBED["OllamaEmbedding\nnomic-embed-text  batch mode\nstored via PGVectorStore"]:::phase1
+        MD_EXP["Markdown Export\nextracted .md per doc\n→ summaries/ for archive + RAG"]:::phase1
+        FD --> LI_LOAD --> LI_PARSE --> LI_EMBED
+        LI_EMBED --> MD_EXP
+    end
+
+    subgraph RET0["Retrieval · Phase 0  (current — rag.py)"]
+        direction TB
+        VEC_SEARCH["search()\nembedding <-> cosine via pgvector\nreturns top-k chunk rows"]:::current
+        BUILD_MSG["build_messages()\nsystem prompt + context + history"]:::current
+        STREAMER["stream_chat()\nNDJSON token stream → browser\ntype: sources | token | done"]:::current
+        VEC_SEARCH --> BUILD_MSG --> STREAMER
+    end
+
+    subgraph RET1["Retrieval · Phase 1  (LlamaIndex)"]
+        direction TB
+        PGV["PGVectorStore\nLlamaIndex wrapper over pgvector\nkeeps existing DB schema intact"]:::phase1
+        VEC_IDX["VectorStoreIndex\nmanaged index over chunk nodes"]:::phase1
+        RETRIEVER["VectorIndexRetriever\ntop-k with similarity score\nfilterable by doc_id"]:::phase1
+        CTX_ENG["ContextChatEngine\nretrieval + memory + prompt\nreplaces build_messages()"]:::phase1
+        PGV --> VEC_IDX --> RETRIEVER --> CTX_ENG
+    end
+
+    subgraph MEMORY["Memory System · Phase 1  (LlamaIndex)"]
+        direction LR
+        MEM_CONV["ChatMemoryBuffer\nrolling conversation turns\npersisted → memory table"]:::phase1
+        MEM_DOC["Document Memory\nper-doc extracted facts\nretrieved on relevant query"]:::phase1
+        MEM_USER["User Preferences\nlearned style + focus\ncross-session persistence"]:::phase1
+    end
+
+    subgraph LG["Orchestration · Phase 2  (LangGraph — wraps LlamaIndex)"]
+        direction LR
+        LG_UP["upload"] --> LG_EX["extract"] --> LG_CH["chunk"] --> LG_EM["embed"] --> LG_ST["store"]
+        LG_QU["query"] --> LG_RE["retrieve"] --> LG_ME["memory\nlookup"] --> LG_AN["answer\n+ stream"]
+        LG_UP:::phase2
+        LG_EX:::phase2
+        LG_CH:::phase2
+        LG_EM:::phase2
+        LG_ST:::phase2
+        LG_QU:::phase2
+        LG_RE:::phase2
+        LG_ME:::phase2
+        LG_AN:::phase2
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 6 — DATA STORES
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    subgraph POSTGRES["PostgreSQL + pgvector  (docker service: postgres)"]
+        direction LR
+        T_DOCS["documents\nid · filename · filepath · pages · created_at"]:::storage
+        T_CHUNKS["chunks\nid · doc_id · chunk_text · chunk_index"]:::storage
+        T_VEC["vec_chunks\nchunk_id · embedding vector(768)"]:::storage
+        T_MEM["memory  ★ Phase 1\nsession_id · key · value · embedding"]:::storage
+    end
+
+    subgraph REDIS_DB["Redis  (docker service: redis)"]
+        direction LR
+        R_EMBED["embed:cache\nhash → vector bytes · TTL 7d"]:::cache
+        R_JOBS["jobs:state\njob_id → JSON status"]:::cache
+        R_QUEUE["rq:default / celery\ntask payloads + results"]:::cache
+        R_RATE["rate:limits\nIP → sliding window counters"]:::cache
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 7 — AI / INFERENCE
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    subgraph OLLAMA["Ollama — Local LLM Server  (docker service: ollama)"]
+        direction LR
+        OL_EMB["nomic-embed-text\n768-dim embeddings"]:::ollama
+        OL_CHAT["llama3.2\nchat · summarize · answer"]:::ollama
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 8 — OBSERVABILITY
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    subgraph OBS["Observability Tier"]
+        direction LR
+        PROM["Prometheus\nscrapes /metrics every 15 s\nrequest count · latency p95\ndocker service: prometheus"]:::obs
+        OTEL["OpenTelemetry Tracer\nspans: ingest · embed · search · chat\nexported to Tempo / Jaeger"]:::obs
+        LOG_AGG["Log Aggregation\nstructured JSON → Loki\ncurrent: rotating file via log.ini"]:::obs
+        GRAFANA["Grafana\ndashboards: latency · embed time\nchunk counts · error rates · memory\ndocker service: grafana"]:::obs
+        PROM --> GRAFANA
+        LOG_AGG --> GRAFANA
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% TIER 9 — DEPLOYMENT & INFRASTRUCTURE
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    subgraph DEPLOY["Deployment & Infrastructure"]
+        direction LR
+        DC["docker-compose.yml\nservices: app · postgres · redis\nollama · nginx · prometheus · grafana"]:::infra
+        ENV_TIERS["Environment Tiers\ndev: env.local\nstaging: .env.staging\nprod: secrets manager / vault"]:::infra
+        VOLS["Named Volumes\npg_data · redis_data\nollama_models · uploads · logs"]:::infra
+        HEALTH_CHK["Health Checks\npostgres: pg_isready\nredis: redis-cli ping\nollama: GET /api/tags"]:::infra
+    end
+
+    %% ─── Config + cross-cutting ──────────────────────────────────────────────
+    subgraph XCUT["Configuration & Cross-cutting"]
+        direction LR
+        CFG["config.py\nloads env.local → runtime settings\nEMBED_MODEL · CHAT_MODEL\nCHUNK_SIZE · TOP_K · DB_URL"]:::config
+        DB_MOD["db.py\npsycopg + pgvector\nget_db()  init_db()\nschema bootstrap on startup"]:::config
+        LOG_MOD["logger.py + log.ini\nrotating file + console\nget_logger(__name__)"]:::config
+    end
+
+    %% ═══════════════════════════════════════════════════════════════════════
+    %% EDGES
+    %% ═══════════════════════════════════════════════════════════════════════
+
+    %% ─── Network path ───────────────────────────────────────────────────────
+    UI -->|HTTPS request| NGINX
+    NGINX -->|proxy_pass :8000| API_KEY
+
+    %% ─── Auth chain → routes ────────────────────────────────────────────────
+    CORS_MW --> EP_UP & EP_LIST & EP_DEL & EP_CHAT & EP_HEALTH
+
+    %% ─── Rate limiter → Redis ────────────────────────────────────────────────
+    RATE_LIM -.->|sliding counters| R_RATE
+
+    %% ─── Upload: Phase 0 (direct background task) ────────────────────────────
+    EP_UP -->|BackgroundTask| PDF_EXT
+    PDF_EXT --> SUMMARIZER
+
+    %% ─── Upload: Cache & Queue (Phase 1 — replaces BackgroundTask + _jobs) ───
+    EP_UP -. Phase 1 .->|enqueue job| JOB_QUEUE
+    JOB_QUEUE -.->|task payload| R_QUEUE
+    WORKER -->|runs| PDF_EXT
+    EP_UP -.->|write status| JOB_STATE
+    JOB_STATE -.->|backed by| R_JOBS
+
+    %% ─── Embedding cache (Phase 1 — wraps get_embedding) ────────────────────
+    EMBEDDER -. Phase 1 .->|lookup| EMBED_CACHE
+    EMBED_CACHE -. cache miss .->|call| OL_EMB
+    EMBED_CACHE -.->|store vectors| R_EMBED
+
+    %% ─── Upload: Phase 1 (LlamaIndex loaders) ───────────────────────────────
+    EP_UP -. Phase 1 .-> FD
+
+    %% ─── Chat: Phase 0 ───────────────────────────────────────────────────────
+    EP_CHAT --> VEC_SEARCH
+
+    %% ─── Chat: Phase 1 ───────────────────────────────────────────────────────
+    EP_CHAT -. Phase 1 .-> PGV
+    MEM_CONV --> CTX_ENG
+    MEM_DOC --> CTX_ENG
+    MEM_USER --> CTX_ENG
+
+    %% ─── Phase 2 — LangGraph orchestration ──────────────────────────────────
+    EP_UP -. Phase 2 .-> LG_UP
+    EP_CHAT -. Phase 2 .-> LG_QU
+
+    %% ─── PostgreSQL writes ───────────────────────────────────────────────────
+    EMBEDDER -->|chunks + vectors| T_DOCS & T_CHUNKS & T_VEC
+    LI_EMBED -. Phase 1 .->|PGVectorStore| T_DOCS & T_CHUNKS & T_VEC
+    MEM_CONV -. Phase 1 .->|persist| T_MEM
+
+    %% ─── Ollama calls ────────────────────────────────────────────────────────
+    EMBEDDER -->|embed chunks| OL_EMB
+    VEC_SEARCH -->|embed query| OL_EMB
+    LI_EMBED -. Phase 1 .->|embed| OL_EMB
+    RETRIEVER -. Phase 1 .->|embed query| OL_EMB
+    BUILD_MSG -->|chat stream| OL_CHAT
+    SUMMARIZER -->|summarize| OL_CHAT
+    CTX_ENG -. Phase 1 .->|chat stream| OL_CHAT
+
+    %% ─── Observability connections ───────────────────────────────────────────
+    EP_METRICS -->|scrape target| PROM
+    FASTAPI -.->|trace spans| OTEL
+    INGEST0 -.->|ingest · embed spans| OTEL
+    RET0 -.->|search · chat spans| OTEL
+    OTEL -.-> GRAFANA
+    LOG_MOD -.->|log stream| LOG_AGG
+
+    %% ─── Config ──────────────────────────────────────────────────────────────
+    CFG -. settings .-> FASTAPI & INGEST0 & RET0
+    DB_MOD -. connection .-> POSTGRES
+    LOG_MOD -. structured logs .-> FASTAPI

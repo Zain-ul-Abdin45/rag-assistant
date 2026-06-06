@@ -1,0 +1,57 @@
+services:
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/rag_assistant
+      OLLAMA_HOST: http://ollama:11434
+      EMBED_MODEL: nomic-embed-text
+      CHAT_MODEL: llama3.2
+      EMBED_DIM: "768"
+      UPLOAD_DIR: uploads
+      CHUNK_SIZE: "800"
+      CHUNK_OVERLAP: "150"
+      TOP_K: "5"
+      EMBED_WORKERS: "3"
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    volumes:
+      - ./uploads:/app/uploads
+      - ./summaries:/app/summaries
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag_assistant
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  ollama_models:
