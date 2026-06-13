@@ -12,5 +12,3 @@ summaries/
 pgvector/
 *.mmd
 deployment.md
-instructions.md
-POSTGRES_MIGRATION.md
