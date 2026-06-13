@@ -30,8 +30,8 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: 
+      POSTGRES_PASSWORD: 
       POSTGRES_DB: rag_assistant
     ports:
       - "5432:5432"
