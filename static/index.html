@@ -200,6 +200,70 @@
     #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     #send-btn:hover:not(:disabled) { opacity: 0.85; }
 
+    /* summary button (mirrors .doc-delete) */
+    .doc-summary {
+      flex-shrink: 0; background: none; border: none; cursor: pointer;
+      color: var(--text-dim); padding: 3px; border-radius: 4px;
+      opacity: 0; transition: opacity 0.15s, color 0.15s;
+    }
+    .doc-item:hover .doc-summary { opacity: 1; }
+    .doc-summary:hover { color: var(--accent); }
+
+    /* source count badge inside source-file */
+    .source-count {
+      font-weight: 400; font-size: 0.68rem; color: var(--text-dim);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1px 6px; margin-left: 6px;
+    }
+
+    /* no-docs input dim */
+    #input-bar.no-docs { opacity: 0.45; pointer-events: none; }
+    #input-bar.no-docs #chat-input::placeholder { color: var(--text-dim); }
+
+    /* summary modal */
+    #modal-overlay {
+      display: none; position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,0.65); backdrop-filter: blur(3px);
+      align-items: center; justify-content: center;
+    }
+    #modal-overlay.open { display: flex; }
+    #modal-panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; width: min(780px, 94vw); max-height: 86vh;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    #modal-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #modal-title { flex: 1; font-size: 0.95rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #modal-download {
+      background: var(--accent-dim); border: 1px solid var(--accent);
+      color: var(--accent); border-radius: 6px; padding: 5px 12px;
+      font-size: 0.8rem; cursor: pointer; white-space: nowrap;
+    }
+    #modal-download:hover { background: var(--accent); color: #fff; }
+    #modal-close {
+      background: none; border: none; color: var(--text-dim);
+      cursor: pointer; padding: 4px; border-radius: 4px;
+      display: flex; align-items: center;
+    }
+    #modal-close:hover { color: var(--text); background: var(--surface2); }
+    #modal-body {
+      flex: 1; overflow-y: auto; padding: 20px 24px;
+      font-size: 0.88rem; line-height: 1.7;
+    }
+    #modal-body h1, #modal-body h2 { margin: 16px 0 8px; font-size: 1rem; }
+    #modal-body h3 { margin: 12px 0 6px; font-size: 0.9rem; }
+    #modal-body p { margin-bottom: 10px; }
+    #modal-body table { border-collapse: collapse; width: 100%; margin-bottom: 12px; font-size: 0.82rem; }
+    #modal-body td, #modal-body th { border: 1px solid var(--border); padding: 5px 10px; }
+    #modal-body th { background: var(--surface2); }
+    #modal-body code { background: #111; padding: 1px 5px; border-radius: 4px; font-size: 0.82rem; }
+    #modal-body pre { background: #0a0a0a; border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; overflow-x: auto; margin: 8px 0; }
+    #modal-loading { text-align: center; color: var(--text-dim); padding: 40px; font-size: 0.9rem; }
+
     /* scrollbar */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -277,6 +341,28 @@
 
 <div id="toast"></div>
 
+<!-- summary modal -->
+<div id="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div id="modal-panel">
+    <div id="modal-header">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
+      </svg>
+      <span id="modal-title">Summary</span>
+      <button id="modal-download" onclick="downloadSummary()">⬇ Download .md</button>
+      <button id="modal-close" onclick="closeModal()">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div id="modal-body"><div id="modal-loading">Loading summary…</div></div>
+  </div>
+</div>
+
 <script>
   // ── state ──────────────────────────────────────────────────────────────────
   let history = [];
@@ -339,12 +425,18 @@
 
   function renderDocs(docs) {
     const list = document.getElementById('doc-list');
+    const inputBar = document.getElementById('input-bar');
+    const chatInput = document.getElementById('chat-input');
     if (!docs.length) {
       list.innerHTML = '<div class="empty-docs">No documents yet.<br/>Upload a PDF to get started.</div>';
       document.getElementById('send-btn').disabled = true;
+      inputBar.classList.add('no-docs');
+      chatInput.placeholder = 'Upload a PDF to start chatting…';
       return;
     }
     document.getElementById('send-btn').disabled = streaming;
+    inputBar.classList.remove('no-docs');
+    chatInput.placeholder = 'Ask a question about your documents…';
     list.innerHTML = docs.map(d => `
       <div class="doc-item" data-id="${d.id}">
         <svg class="doc-icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -355,6 +447,13 @@
           <div class="doc-name" title="${escHtml(d.filename)}">${escHtml(d.filename)}</div>
           <div class="doc-meta">${d.pages} page${d.pages !== 1 ? 's' : ''} · ${formatDate(d.created_at)}</div>
         </div>
+        <button class="doc-summary" title="View summary" onclick="openSummary(${d.id}, '${escHtml(d.filename)}', event)">
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+        </button>
         <button class="doc-delete" title="Remove" onclick="deleteDoc(${d.id}, event)">
           <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
             <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
@@ -535,6 +634,15 @@
 
   function renderSources(bubble, sources) {
     if (!sources || !sources.length) return;
+
+    // Group chunks by filename — one card per unique file.
+    const byFile = {};
+    for (const s of sources) {
+      if (!byFile[s.filename]) byFile[s.filename] = [];
+      byFile[s.filename].push(s.chunk_text);
+    }
+    const files = Object.entries(byFile);
+
     const sec = document.createElement('div');
     sec.className = 'sources';
     sec.innerHTML = `
@@ -542,13 +650,16 @@
         <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <polyline points="6 15 12 9 18 15"/>
         </svg>
-        ${sources.length} source${sources.length !== 1 ? 's' : ''} used
+        ${files.length} file${files.length !== 1 ? 's' : ''} referenced
       </button>
       <div class="sources-list">
-        ${sources.map(s => `
+        ${files.map(([filename, chunks]) => `
           <div class="source-chip">
-            <div class="source-file">${escHtml(s.filename)}</div>
-            <div class="source-excerpt">${escHtml(s.chunk_text)}</div>
+            <div class="source-file">
+              ${escHtml(filename)}
+              <span class="source-count">${chunks.length} excerpt${chunks.length !== 1 ? 's' : ''}</span>
+            </div>
+            <div class="source-excerpt">${escHtml(chunks[0])}</div>
           </div>
         `).join('')}
       </div>
@@ -642,6 +753,52 @@
       input.focus();
     }
   }
+
+  // ── summary modal ──────────────────────────────────────────────────────────
+  let _summaryContent = '';
+  let _summaryFilename = '';
+
+  async function openSummary(docId, filename, e) {
+    e.stopPropagation();
+    _summaryFilename = filename;
+    _summaryContent = '';
+    document.getElementById('modal-title').textContent = filename;
+    document.getElementById('modal-body').innerHTML = '<div id="modal-loading">Loading summary…</div>';
+    document.getElementById('modal-overlay').classList.add('open');
+
+    try {
+      const r = await fetch(apiUrl(`/documents/${docId}/summary`));
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: 'Not found' }));
+        document.getElementById('modal-body').innerHTML =
+          `<p style="color:var(--text-dim)">${escHtml(err.detail || 'Summary not available yet. The document may still be processing.')}</p>`;
+        return;
+      }
+      const data = await r.json();
+      _summaryContent = data.content;
+      document.getElementById('modal-body').innerHTML = marked.parse(_summaryContent);
+    } catch (err) {
+      document.getElementById('modal-body').innerHTML =
+        `<p style="color:var(--danger)">Failed to load summary: ${escHtml(err.message)}</p>`;
+    }
+  }
+
+  function closeModal() {
+    document.getElementById('modal-overlay').classList.remove('open');
+  }
+
+  function downloadSummary() {
+    if (!_summaryContent) return;
+    const stem = _summaryFilename.replace(/\.pdf$/i, '');
+    const blob = new Blob([_summaryContent], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `summary_${stem}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
   // ── helpers ────────────────────────────────────────────────────────────────
   function escHtml(s) {

@@ -1,3 +1,4 @@
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeout
 
 import fitz  # PyMuPDF
@@ -36,28 +37,75 @@ def extract_text(filepath: str) -> tuple[str, int]:
 # ── chunking ──────────────────────────────────────────────────────────────────
 
 def chunk_text(text: str) -> list[str]:
+    """
+    Paragraph-first recursive chunking.
+
+    Strategy:
+    1. Split on blank lines (paragraphs). Accumulate paragraphs until the
+       running buffer would exceed CHUNK_SIZE, then flush with CHUNK_OVERLAP
+       carry-over.
+    2. If a single paragraph exceeds CHUNK_SIZE, fall back to sentence
+       splitting (regex on .!? boundaries).
+    3. If a single sentence still exceeds CHUNK_SIZE, hard-split at character
+       boundaries as a last resort.
+
+    This keeps sentences and paragraphs intact instead of cutting mid-word,
+    which improves both embedding quality and readability of retrieved excerpts.
+    """
     logger.info("chunking text (size=%d overlap=%d)…", CHUNK_SIZE, CHUNK_OVERLAP)
+
+    def _split_long(segment: str) -> list[str]:
+        """Hard-split a segment that exceeds CHUNK_SIZE at sentence boundaries,
+        then character boundaries if needed."""
+        parts: list[str] = []
+        sentences = re.split(r'(?<=[.!?])\s+', segment)
+        buf = ""
+        for sent in sentences:
+            if len(buf) + len(sent) + 1 <= CHUNK_SIZE:
+                buf = (buf + " " + sent).strip() if buf else sent
+            else:
+                if buf:
+                    parts.append(buf)
+                    buf = buf[-CHUNK_OVERLAP:] + " " + sent if len(buf) > CHUNK_OVERLAP else sent
+                else:
+                    # Single sentence longer than CHUNK_SIZE — hard character split
+                    for i in range(0, len(sent), CHUNK_SIZE - CHUNK_OVERLAP):
+                        parts.append(sent[i:i + CHUNK_SIZE])
+                    buf = ""
+        if buf:
+            parts.append(buf)
+        return parts
+
+    paragraphs = re.split(r'\n\s*\n', text)
     chunks: list[str] = []
-    start = 0
-    text_len = len(text)
-    while start < text_len:
-        end = min(start + CHUNK_SIZE, text_len)
-        if end < text_len:
-            boundary = max(
-                text.rfind(". ", start, end),
-                text.rfind("\n", start, end),
-            )
-            if boundary > start + CHUNK_SIZE // 2:
-                end = boundary + 1
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        next_start = end - CHUNK_OVERLAP
-        if next_start <= start:          # guard against non-advancing loop
-            next_start = start + CHUNK_SIZE
-        start = next_start
-    logger.info("produced %d chunk(s)", len(chunks))
-    return chunks
+    buf = ""
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        if len(para) > CHUNK_SIZE:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            chunks.extend(_split_long(para))
+            continue
+        if len(buf) + len(para) + 2 <= CHUNK_SIZE:
+            buf = (buf + "\n\n" + para).strip() if buf else para
+        else:
+            if buf:
+                chunks.append(buf)
+                # Carry overlap into next chunk for context continuity
+                buf = buf[-CHUNK_OVERLAP:] + "\n\n" + para if len(buf) > CHUNK_OVERLAP else para
+            else:
+                buf = para
+
+    if buf:
+        chunks.append(buf)
+
+    result = [c.strip() for c in chunks if c.strip()]
+    logger.info("produced %d chunk(s)", len(result))
+    return result
 
 
 # ── embedding ─────────────────────────────────────────────────────────────────

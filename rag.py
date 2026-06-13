@@ -3,6 +3,7 @@ import uuid
 from typing import Generator
 
 import ollama
+from rank_bm25 import BM25Okapi
 
 from config import CHAT_MODEL, EMBED_MODEL, OLLAMA_HOST, TOP_K
 from db import get_db
@@ -22,7 +23,32 @@ _MEMORY_K = 3
 
 # ── document retrieval ────────────────────────────────────────────────────────
 
+def _rrf(rankings: list[list[int]], n: int, k: int = 60) -> list[float]:
+    """Reciprocal Rank Fusion over multiple ranked lists of indices."""
+    scores = [0.0] * n
+    for ranked in rankings:
+        for rank, idx in enumerate(ranked):
+            scores[idx] += 1 / (k + rank + 1)
+    return scores
+
+
+def _rerank_for_context(chunks: list[dict]) -> list[dict]:
+    """Lost-in-the-middle mitigation: place best chunks at edges, not buried centre."""
+    if len(chunks) <= 2:
+        return chunks
+    # LLMs attend most to position 0 and the last position.
+    return [chunks[0]] + chunks[2:] + [chunks[1]]
+
+
 def search(query: str, k: int = TOP_K) -> list[dict]:
+    """
+    Hybrid BM25 + cosine vector search with RRF fusion.
+
+    Fetches a wider candidate pool via pgvector cosine distance, then
+    re-ranks using BM25 keyword scores and RRF fusion before applying the
+    relevance threshold. Improves recall for exact-term queries that pure
+    cosine similarity misses.
+    """
     conn = get_db()
     count = conn.execute("SELECT COUNT(*) AS count FROM chunks").fetchone()["count"]
     if count == 0:
@@ -30,7 +56,7 @@ def search(query: str, k: int = TOP_K) -> list[dict]:
         conn.close()
         return []
 
-    k = min(k, count)
+    candidate_k = min(k * 4, count)
     query_vec = get_embedding(query)
 
     rows = conn.execute(
@@ -42,18 +68,44 @@ def search(query: str, k: int = TOP_K) -> list[dict]:
         ORDER BY distance
         LIMIT %s
         """,
-        (query_vec, k),
+        (query_vec, candidate_k),
     ).fetchall()
     conn.close()
 
-    all_rows = [dict(r) for r in rows]
-    results = [r for r in all_rows if r["distance"] < _SEARCH_THRESHOLD]
-    best = all_rows[0]["distance"] if all_rows else 0
+    candidates = [dict(r) for r in rows]
+    if not candidates:
+        return []
+
+    # pgvector already returns rows sorted by cosine distance ascending
+    vec_ranked = list(range(len(candidates)))
+
+    # BM25 keyword ranking over the same candidate pool
+    tokenized = [c["chunk_text"].lower().split() for c in candidates]
+    bm25 = BM25Okapi(tokenized)
+    bm25_scores = bm25.get_scores(query.lower().split())
+    bm25_ranked = sorted(range(len(candidates)), key=lambda i: bm25_scores[i], reverse=True)
+
+    # RRF fusion — combine both signal rankings
+    rrf_scores = _rrf([vec_ranked, bm25_ranked], len(candidates))
+    fused_order = sorted(range(len(candidates)), key=lambda i: rrf_scores[i], reverse=True)
+
+    # Apply cosine threshold: exclude chunks that are clearly off-topic
+    results = [
+        candidates[i] for i in fused_order
+        if candidates[i]["distance"] < _SEARCH_THRESHOLD
+    ][:k]
+
+    best = candidates[0]["distance"]
     if results:
-        logger.info("search: %d relevant chunk(s) — best distance=%.4f", len(results), best)
+        logger.info(
+            "search: %d relevant chunk(s) — best cosine=%.4f (hybrid BM25+vector)",
+            len(results), best,
+        )
     else:
-        logger.info("search: no chunks within threshold %.1f (best distance=%.4f)",
-                    _SEARCH_THRESHOLD, best)
+        logger.info(
+            "search: no chunks within threshold %.1f (best cosine=%.4f)",
+            _SEARCH_THRESHOLD, best,
+        )
     return results
 
 
@@ -158,7 +210,7 @@ def stream_chat(
     logger.info("stream_chat start — query: %.80s…", query)
 
     memory = recall_memory(query) if session_id else []
-    sources = search(query)
+    sources = _rerank_for_context(search(query))
 
     yield json.dumps({"type": "sources", "data": sources}) + "\n"
 
